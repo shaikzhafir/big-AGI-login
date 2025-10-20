@@ -1,5 +1,3 @@
-// noinspection ExceptionCaughtLocallyJS
-
 import * as React from 'react';
 import { fileOpen, fileSave, FileWithHandle } from 'browser-fs-access';
 
@@ -21,7 +19,7 @@ import { downloadBlob } from '~/common/util/downloadUtils';
 const BACKUP_FILE_FORMAT = 'Big-AGI Flash File';
 const BACKUP_FORMAT_VERSION = '1.2';
 const BACKUP_FORMAT_VERSION_NUMBER = 102000;
-const WINDOW_RELOAD_DELAY = 200;
+const WINDOW_RELOAD_DELAY = 300;
 const EXCLUDED_LOCAL_STORAGE_KEYS = [
   'agi-logger-log', // the log cannot be restored as it's in-mem and being persisted while this is running
 ];
@@ -36,8 +34,8 @@ const INCLUDED_IDB_KEYS: { [dbName: string]: { [storeName: string]: string[]; };
 // Flashing Backup Schema
 // NOTE: ABSOLUTELY NOT CHANGE WITHOUT CHANGING THE saveFlashObjectOrThrow_Streaming TOO (!)
 interface DFlashSchema {
-  _t: 'agi.flash-backup';
-  _v: number;
+  schema: 'vnd.agi.flash-backup';
+  schemaVersion: number;
   metadata: {
     version: string;
     timestamp: string;
@@ -247,6 +245,13 @@ function getIndexedDBContent(dbName: string): Promise<Record<string, { key: any;
 
 async function restoreLocalStorage(data: Record<string, any>): Promise<void> {
   try {
+    // Skip restoration if backup contains no localStorage data
+    const hasData = Object.keys(data).length > 0;
+    if (!hasData) {
+      logger.info('Skipping localStorage restore - backup contains no localStorage data');
+      return;
+    }
+
     localStorage.clear();
     for (const key in data) {
       try {
@@ -262,7 +267,7 @@ async function restoreLocalStorage(data: Record<string, any>): Promise<void> {
 }
 
 async function restoreIndexedDB(allDbData: Record<string, any>): Promise<void> {
-  // expected local DBs to restore over, from the latest `v2-dev` (2025-05-14)
+  // expected local DBs to restore over, from the latest `main` (was: `v2-dev`, 2025-05-14)
   const dbTargetVersions: { [dbName: string]: number } = {
     'keyval-store': 1,
     'Big-AGI': 10, // Dexie multiplied the version (1) by 10 (https://github.com/dexie/Dexie.js/issues/59)
@@ -498,11 +503,11 @@ function isValidBackup(data: any): data is DFlashSchema {
 /**
  * Creates a backup object and optionally saves it to a file
  */
-async function saveFlashObjectOrThrow(backupType: 'full' | 'auto-before-restore', forceDownloadOverFileSave: boolean, ignoreExclusions: boolean, saveToFileName: string) {
+async function saveFlashObjectOrThrow(backupType: 'full' | 'auto-before-restore', forceDownloadOverFileSave: boolean, ignoreExclusions: boolean, includeSettings: boolean, saveToFileName: string) {
 
   // for mobile, try with the download link approach - we keep getting truncated JSON save-files in other paths, streaming or not
   if (forceDownloadOverFileSave || !Is.Desktop)
-    return createFlashObject(backupType, ignoreExclusions)
+    return createFlashObject(backupType, ignoreExclusions, includeSettings)
       .then(JSON.stringify)
       .then((flashString) => {
         logger.info(`Expected flash file size: ${flashString.length.toLocaleString()} bytes`);
@@ -517,7 +522,7 @@ async function saveFlashObjectOrThrow(backupType: 'full' | 'auto-before-restore'
   // run after the file picker has confirmed a file
   const flashBlobPromise = new Promise<Blob>(async (resolve) => {
     // create the backup object (heavy operation)
-    const flashObject = await createFlashObject(backupType, ignoreExclusions);
+    const flashObject = await createFlashObject(backupType, ignoreExclusions, includeSettings);
 
     // WARNING: on Mobile, the JSON serialization could fail silently - we disable pretty-print to conserve space
     const flashString = !Is.Desktop ? JSON.stringify(flashObject)
@@ -550,8 +555,8 @@ async function saveFlashObjectOrThrow(backupType: 'full' | 'auto-before-restore'
 //         try {
 //           // start the JSON object
 //           controller.enqueue(encoder.encode('{\n'));
-//           controller.enqueue(encoder.encode(`  "_t": "agi.flash-backup",\n`));
-//           controller.enqueue(encoder.encode(`  "_v": ${BACKUP_FORMAT_VERSION_NUMBER},\n`));
+//           controller.enqueue(encoder.encode(`  "schema": "vnd.agi.flash-backup",\n`));
+//           controller.enqueue(encoder.encode(`  "schemaVersion": ${BACKUP_FORMAT_VERSION_NUMBER},\n`));
 //           controller.enqueue(encoder.encode(`  "metadata": ${JSON.stringify({
 //             version: BACKUP_FORMAT_VERSION,
 //             timestamp: new Date().toISOString(),
@@ -619,10 +624,10 @@ async function saveFlashObjectOrThrow(backupType: 'full' | 'auto-before-restore'
 //   });
 // }
 
-async function createFlashObject(backupType: 'full' | 'auto-before-restore', ignoreExclusions: boolean): Promise<DFlashSchema> {
+async function createFlashObject(backupType: 'full' | 'auto-before-restore', ignoreExclusions: boolean, includeSettings: boolean): Promise<DFlashSchema> {
   return {
-    _t: 'agi.flash-backup',
-    _v: BACKUP_FORMAT_VERSION_NUMBER,
+    schema: 'vnd.agi.flash-backup',
+    schemaVersion: BACKUP_FORMAT_VERSION_NUMBER,
     metadata: {
       version: BACKUP_FORMAT_VERSION,
       timestamp: new Date().toISOString(),
@@ -630,7 +635,7 @@ async function createFlashObject(backupType: 'full' | 'auto-before-restore', ign
       backupType,
     },
     storage: {
-      localStorage: await getAllLocalStorageKeyValues(),
+      localStorage: includeSettings ? await getAllLocalStorageKeyValues() : {},
       indexedDB: await getAllIndexedDBData(ignoreExclusions),
     },
   };
@@ -653,6 +658,8 @@ export function FlashRestore(props: { unlockRestore?: boolean }) {
   // derived state
   const isUnlocked = !!props.unlockRestore;
   const isBusy = restoreState === 'processing';
+  const hasLocalStorageData = backupDataForRestore ? Object.keys(backupDataForRestore.storage.localStorage).length > 0 : false;
+  const hasIndexedDBData = backupDataForRestore ? Object.keys(backupDataForRestore.storage.indexedDB).length > 0 : false;
 
 
   // handlers
@@ -686,14 +693,28 @@ export function FlashRestore(props: { unlockRestore?: boolean }) {
       try {
         data = JSON.parse(content);
       } catch (error) {
-        throw new Error(`Restore failed: Invalid JSON in Flash file: ${_getErrorText(error)}`);
+        // User selected invalid JSON - this is expected, not a system error
+        setRestoreState('error');
+        setErrorMessage(`Invalid JSON in Flash file: ${_getErrorText(error)}`);
+        logger.warn('User selected non-JSON file for restore', { error }, undefined, { skipReporting: true });
+        return;
       }
 
       // validations
-      if (!isValidBackup(data))
-        throw new Error(`Invalid Flash file format. This does not appear to be a valid ${BACKUP_FILE_FORMAT}.`);
-      if (data.metadata.application !== 'Big-AGI' || !data.storage.indexedDB || !data.storage.localStorage)
-        throw new Error(`Incompatible Flash file. Found application "${data.metadata.application}" but expected "Big-AGI".`);
+      if (!isValidBackup(data)) {
+        // User selected wrong file format - this is expected, not a system error
+        setRestoreState('error');
+        setErrorMessage(`Invalid Flash file format. This does not appear to be a valid ${BACKUP_FILE_FORMAT}.`);
+        logger.warn('User selected invalid backup file format', { data: { hasMetadata: !!data?.metadata, hasStorage: !!data?.storage } }, undefined, { skipReporting: true });
+        return;
+      }
+      if (data.metadata.application !== 'Big-AGI' || !data.storage.indexedDB || !data.storage.localStorage) {
+        // User selected incompatible file - this is expected, not a system error
+        setRestoreState('error');
+        setErrorMessage(`Incompatible Flash file. Found application "${data.metadata.application}" but expected "Big-AGI".`);
+        logger.warn('User selected incompatible backup file', { application: data.metadata.application }, undefined, { skipReporting: true });
+        return;
+      }
 
       // load data purely into state, and ready for confirmation
       setBackupDataForRestore(data);
@@ -702,7 +723,8 @@ export function FlashRestore(props: { unlockRestore?: boolean }) {
       setRestoreLocalStorageEnabled(false);
       setRestoreIndexedDBEnabled(false);
     } catch (error: any) {
-      logger.error('Restore preparation failed:', error);
+      // Unexpected system errors only
+      logger.error('Unexpected error during restore preparation:', error);
       setRestoreState('error');
       setErrorMessage(`Restore failed: ${_getErrorText(error)}`);
     }
@@ -746,19 +768,23 @@ export function FlashRestore(props: { unlockRestore?: boolean }) {
       if (!restoreLocalStorageEnabled && !restoreIndexedDBEnabled)
         throw new Error('No data was selected for restore. Please select at least one option.');
 
+      // 3. Close the modal cleanly first to prevent React DOM errors during unmount
+      // Set state to idle and clear backup data to trigger modal close
       setRestoreState('success');
 
-      // 3. Alert and reload
+      // 3. Alert and reload - Close modal first, then wait for storage flush and DOM cleanup
+      setBackupDataForRestore(null);
+
+      // 4. Wait for React to complete the modal unmount and storage to flush
       setTimeout(() => {
         alert('Backup restored successfully.\n\nThe application will now reload to apply the changes.');
         window.location.reload();
-      }, WINDOW_RELOAD_DELAY);
+      }, WINDOW_RELOAD_DELAY); // 300ms allows modal to unmount and storage to flush
 
     } catch (error: any) {
       logger.error('Restore operation failed:', error);
       setRestoreState('error');
       setErrorMessage(`Restore failed: ${_getErrorText(error)}`);
-    } finally {
       setBackupDataForRestore(null);
     }
   }, [backupDataForRestore, restoreIndexedDBEnabled, restoreLocalStorageEnabled]);
@@ -807,7 +833,7 @@ export function FlashRestore(props: { unlockRestore?: boolean }) {
 
     {/* Confirmation Dialog */}
     <GoodModal
-      title={`Confirm ${Release.App.versionName} Restore`}
+      title={`Confirm Restore`}
       strongerTitle
       dividers
       hideBottomClose
@@ -843,12 +869,13 @@ export function FlashRestore(props: { unlockRestore?: boolean }) {
               size='md'
               color='neutral'
               checked={restoreLocalStorageEnabled}
+              disabled={!hasLocalStorageData}
               onChange={(event) => setRestoreLocalStorageEnabled(event.target.checked)}
             />
-            <FormLabel sx={{ fontWeight: 'sm', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+            <FormLabel sx={{ fontWeight: 'sm', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', opacity: hasLocalStorageData ? 1 : 0.5 }}>
               App Settings
               <Typography level='body-xs' sx={{ fontWeight: 'normal', color: 'text.secondary' }}>
-                (preferences, models)
+                {hasLocalStorageData ? '(preferences, models)' : '(not in backup file)'}
               </Typography>
             </FormLabel>
           </FormControl>
@@ -857,12 +884,13 @@ export function FlashRestore(props: { unlockRestore?: boolean }) {
               size='md'
               color='neutral'
               checked={restoreIndexedDBEnabled}
+              disabled={!hasIndexedDBData}
               onChange={(event) => setRestoreIndexedDBEnabled(event.target.checked)}
             />
-            <FormLabel sx={{ fontWeight: 'sm', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+            <FormLabel sx={{ fontWeight: 'sm', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', opacity: hasIndexedDBData ? 1 : 0.5 }}>
               Conversations
               <Typography level='body-xs' sx={{ fontWeight: 'normal', color: 'text.secondary' }}>
-                (chats, attachments)
+                {hasIndexedDBData ? '(chats, attachments)' : '(not in backup file)'}
               </Typography>
             </FormLabel>
           </FormControl>
@@ -894,6 +922,7 @@ export function FlashBackup(props: {
 
   // state
   const [includeImages, setIncludeImages] = React.useState(false);
+  const [includeSettings, setIncludeSettings] = React.useState(true);
   const [backupState, setBackupState] = React.useState<'idle' | 'processing' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
 
@@ -913,7 +942,8 @@ export function FlashBackup(props: {
         'full',
         event.ctrlKey, // control forces a traditional browser download - default: fileSave
         includeImages,
-        `Big-AGI-flash${includeImages ? '+images' : ''}${event.ctrlKey ? '-download' : ''}-${dateStr}.json`,
+        includeSettings,
+        `Big-AGI-flash${includeImages ? '+images' : ''}${includeSettings ? '' : '-nosets'}${event.ctrlKey ? '-download' : ''}-${dateStr}.json`,
       );
       setBackupState(success ? 'success' : 'idle');
     } catch (error: any) {
@@ -926,7 +956,7 @@ export function FlashBackup(props: {
         setErrorMessage(`Backup failed: ${_getErrorText(error)}`);
       }
     }
-  }, [includeImages, onStartedBackup]);
+  }, [includeImages, includeSettings, onStartedBackup]);
 
 
   return <>
@@ -952,6 +982,10 @@ export function FlashBackup(props: {
       {backupState === 'success' ? 'Backup Saved' : backupState === 'error' ? 'Backup Failed' : isProcessing ? 'Backing Up...' : 'Export All'}
     </Button>
     {!errorMessage && <>
+      <FormControl orientation='horizontal' sx={{ justifyContent: 'space-between', alignItems: 'center', ml: 2, mr: 1.25, mt: 0.25 }}>
+        <FormLabel sx={{ fontWeight: 'md' }}>Include Models & Settings</FormLabel>
+        <Switch size='sm' checked={includeSettings} onChange={(event) => setIncludeSettings(event.target.checked)} />
+      </FormControl>
       <FormControl orientation='horizontal' sx={{ justifyContent: 'space-between', alignItems: 'center', ml: 2, mr: 1.25, mt: 0.25 }}>
         <FormLabel sx={{ fontWeight: 'md' }}>Include Binary Images</FormLabel>
         <Switch size='sm' color={includeImages ? 'danger' : undefined} checked={includeImages} onChange={(event) => setIncludeImages(event.target.checked)} />

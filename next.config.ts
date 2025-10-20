@@ -32,7 +32,7 @@ let nextConfig: NextConfig = {
   reactStrictMode: true,
 
   // [exports] https://nextjs.org/docs/advanced-features/static-html-export
-  ...buildType && {
+  ...(buildType && {
     output: buildType,
     distDir: 'dist',
 
@@ -41,7 +41,7 @@ let nextConfig: NextConfig = {
 
     // Optional: Change links `/me` -> `/me/` and emit `/me.html` -> `/me/index.html`
     // trailingSlash: true,
-  },
+  }),
 
   // [puppeteer] https://github.com/puppeteer/puppeteer/issues/11052
   // NOTE: we may not be needing this anymore, as we use '@cloudflare/puppeteer'
@@ -88,6 +88,10 @@ let nextConfig: NextConfig = {
         source: '/a/ph/decide',
         destination: 'https://us.i.posthog.com/decide',
       },
+      {
+        source: '/a/ph/flags',
+        destination: 'https://us.i.posthog.com/flags',
+      },
     ];
   },
 
@@ -111,7 +115,7 @@ verifyBuildTimeVars();
 // PostHog error reporting with source maps for production builds
 import { withPostHogConfig } from '@posthog/nextjs-config';
 if (process.env.POSTHOG_API_KEY && process.env.POSTHOG_ENV_ID) {
-  console.log(' 🧠 \x1b[1mbig-AGI\x1b[0m: building with PostHog error tracking and source maps...');
+  console.log(' 🧠 \x1b[1mbig-AGI\x1b[0m: building with PostHog issue reporting and source maps...');
   nextConfig = withPostHogConfig(nextConfig, {
     personalApiKey: process.env.POSTHOG_API_KEY,
     envId: process.env.POSTHOG_ENV_ID,

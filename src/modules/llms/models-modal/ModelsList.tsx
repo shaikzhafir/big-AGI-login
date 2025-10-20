@@ -8,9 +8,10 @@ import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 
 import type { DModelsServiceId } from '~/common/stores/llms/llms.service.types';
-import { DLLM, DLLMId, LLM_IF_ANT_PromptCaching, LLM_IF_GEM_CodeExecution, LLM_IF_OAI_Chat, LLM_IF_OAI_Complete, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching, LLM_IF_OAI_Realtime, LLM_IF_OAI_Reasoning, LLM_IF_OAI_Vision, LLM_IF_Outputs_Audio, LLM_IF_Outputs_Image, LLM_IF_Tools_WebSearch } from '~/common/stores/llms/llms.types';
+import { DLLM, DLLMId, isLLMHidden, LLM_IF_ANT_PromptCaching, LLM_IF_GEM_CodeExecution, LLM_IF_OAI_Complete, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching, LLM_IF_OAI_Realtime, LLM_IF_OAI_Reasoning, LLM_IF_OAI_Vision, LLM_IF_Outputs_Audio, LLM_IF_Outputs_Image, LLM_IF_Tools_WebSearch } from '~/common/stores/llms/llms.types';
 import { GoodTooltip } from '~/common/components/GoodTooltip';
 import { PhGearSixIcon } from '~/common/components/icons/phosphor/PhGearSixIcon';
+import { STAR_EMOJI, StarredToggle, starredToggleStyle } from '~/common/components/StarIcons';
 import { findModelsServiceOrNull, llmsStoreActions } from '~/common/stores/llms/store-llms';
 import { useLLMsByService } from '~/common/stores/llms/llms.hooks';
 import { useIsMobile } from '~/common/components/useMatchMedia';
@@ -132,8 +133,6 @@ function ModelItem(props: {
       return null;
     return llm.interfaces.map((iface, i) => {
       switch (iface) {
-        // case LLM_IF_OAI_Chat:
-        //   return <Chip key={i} size='sm' variant={props.chipChat ? 'solid' : 'plain'} sx={{ boxShadow: 'xs' }}><TextsmsOutlinedIcon /></Chip>;
         case LLM_IF_OAI_Vision:
           return <Chip key={i} size='sm' variant='plain' sx={{ boxShadow: 'xs' }}><VisibilityOutlinedIcon />️</Chip>;
         case LLM_IF_OAI_Reasoning:
@@ -165,9 +164,9 @@ function ModelItem(props: {
 
         {/* Model Name */}
         <GoodTooltip title={tooltip}>
-          <Box sx={llm.hidden ? styles.modelHiddenText : styles.modelText} className='agi-ellipsize'>
-            {(/*props.isMobile &&*/ llm.userStarred) ? `⭐ ${llm.label}` : llm.label}
-            {/*{labelWithoutDate}{labelDate && <Box component='span' sx={{ typography: 'body-sm',color: llm.hidden ? 'neutral.plainDisabledColor' : undefined  }}> · ({labelDate})</Box>}*/}
+          <Box sx={isLLMHidden(llm) ? styles.modelHiddenText : styles.modelText} className='agi-ellipsize'>
+            {(/*props.isMobile &&*/ llm.userStarred) ? `${STAR_EMOJI} ${llm.label}` : llm.label}
+            {/*{labelWithoutDate}{labelDate && <Box component='span' sx={{ typography: 'body-sm',color: isLLMHidden(llm) ? 'neutral.plainDisabledColor' : undefined  }}> · ({labelDate})</Box>}*/}
             {/*{llm.interfaces.includes(LLM_IF_OAI_Reasoning) && <span style={styles.styleNameChip}>🧠</span>}*/}
           </Box>
         </GoodTooltip>
@@ -206,9 +205,9 @@ function ModelItem(props: {
           {/*  </IconButton>*/}
           {/*</GoodTooltip>}*/}
 
-          {!props.isMobile && <GoodTooltip title={llm.hidden ? 'Hidden' : 'Shown in Chat'}>
-            <IconButton aria-label={llm.hidden ? 'Unhide' : 'Hide in Chat'} size='sm' onClick={llm.hidden ? handleLLMUnhide : handleLLMHide} sx={absorbListPadding}>
-              {llm.hidden ? <VisibilityOffOutlinedIcon sx={{ opacity: 0.5, fontSize: 'md' }} /> : <VisibilityOutlinedIcon />}
+          {!props.isMobile && <GoodTooltip title={isLLMHidden(llm) ? 'Hidden' : 'Shown in Chat'}>
+            <IconButton aria-label={isLLMHidden(llm) ? 'Unhide' : 'Hide in Chat'} size='sm' onClick={isLLMHidden(llm) ? handleLLMUnhide : handleLLMHide} sx={absorbListPadding}>
+              {isLLMHidden(llm) ? <VisibilityOffOutlinedIcon sx={{ opacity: 0.5, fontSize: 'md' }} /> : <VisibilityOutlinedIcon />}
             </IconButton>
           </GoodTooltip>}
 
@@ -227,6 +226,7 @@ function ModelItem(props: {
 
 export function ModelsList(props: {
   filterServiceId: DModelsServiceId | null,
+  showHiddenModels: boolean,
   onOpenLLMOptions: (id: DLLMId) => void,
   sx?: SxProps,
 }) {
@@ -240,7 +240,7 @@ export function ModelsList(props: {
 
   const handleModelClicked = React.useCallback((llmId: DLLMId) => onOpenLLMOptions(llmId), [onOpenLLMOptions]);
 
-  const handleModelSetHidden = React.useCallback((llmId: DLLMId, hidden: boolean) => llmsStoreActions().updateLLM(llmId, { hidden }), []);
+  const handleModelSetHidden = React.useCallback((llmId: DLLMId, hidden: boolean) => llmsStoreActions().updateLLM(llmId, { userHidden: hidden }), []);
 
   const handleModelSetStarred = React.useCallback((llmId: DLLMId, starred: boolean) => llmsStoreActions().updateLLM(llmId, { userStarred: starred }), []);
 
@@ -259,6 +259,10 @@ export function ModelsList(props: {
     // generate the list items, prepending headers when necessary
     const items: React.JSX.Element[] = [];
     for (const llm of llms) {
+
+      // skip hidden models if requested
+      if (!props.showHiddenModels && isLLMHidden(llm))
+        continue;
 
       // get the service label
       const serviceLabel = findModelsServiceOrNull(llm.sId)?.label ?? llm.sId;
@@ -295,13 +299,13 @@ export function ModelsList(props: {
     }
 
     return items;
-  }, [domainAssignments, handleModelClicked, handleModelSetHidden, handleModelSetStarred, isMobile, llms, props.filterServiceId]);
+  }, [domainAssignments, handleModelClicked, handleModelSetHidden, handleModelSetStarred, isMobile, llms, props.filterServiceId, props.showHiddenModels]);
 
   return (
     <List size={!isMobile ? undefined : 'sm'} variant='outlined' sx={props.sx}>
       {modelItems.length > 0 ? modelItems : (
         <ListItem sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-          <Typography level='body-sm'>
+          <Typography level='body-sm' mx={2}>
             Please complete the configuration and refresh the models list.
           </Typography>
           {/*<Skeleton variant='rectangular' animation={false} height={24} width={160} />*/}
